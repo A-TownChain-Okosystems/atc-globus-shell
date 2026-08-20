@@ -2,7 +2,7 @@
 // Module: shell_history
 // Description: Persistent command history
 // ATC-Standard: ATC-24
-// Sprint: 3.1
+// Sprint: 3.2
 // Language: ATCLang v0.3
 // Created: 2026-08-20
 // Agent: Aurora (MasterBrain · Base44)
@@ -16,6 +16,7 @@ module shell_history {
 
     const MAX_ENTRIES: UInt64 = 1000
     const HISTORY_VERSION: UInt64 = 1
+    const STORAGE_KEY: String = "atc/shell/history"
 
     // ------------------------------------------------------------------------
     // Primary struct
@@ -49,7 +50,7 @@ module shell_history {
     var dirty: Bool = false
 
     // ------------------------------------------------------------------------
-    // Initialize module
+    // Initialize
     // ------------------------------------------------------------------------
 
     fn init() -> Bool {
@@ -63,7 +64,10 @@ module shell_history {
         dirty = false
         initialized = true
 
-        load()
+        if load() == false {
+            initialized = false
+            return false
+        }
 
         return true
     }
@@ -189,7 +193,7 @@ module shell_history {
     }
 
     // ------------------------------------------------------------------------
-    // Recall by immutable ID
+    // Recall
     // ------------------------------------------------------------------------
 
     fn recall(id: UInt64) -> String {
@@ -214,7 +218,7 @@ module shell_history {
     }
 
     // ------------------------------------------------------------------------
-    // Get entry
+    // Get
     // ------------------------------------------------------------------------
 
     fn get(id: UInt64) -> String {
@@ -243,7 +247,7 @@ module shell_history {
     }
 
     // ------------------------------------------------------------------------
-    // Remove entry
+    // Remove
     // ------------------------------------------------------------------------
 
     fn remove(id: UInt64) -> Bool {
@@ -254,26 +258,27 @@ module shell_history {
 
         for i in 0..entries.length() {
 
-            if entries[i].id == id {
-
-                if entries[i].active == false {
-                    return false
-                }
-
-                entries[i].active = false
-                entries[i].updated_at = timestamp()
-
-                dirty = true
-
-                return true
+            if entries[i].id != id {
+                continue
             }
+
+            if entries[i].active == false {
+                return false
+            }
+
+            entries[i].active = false
+            entries[i].updated_at = timestamp()
+
+            dirty = true
+
+            return true
         }
 
         return false
     }
 
     // ------------------------------------------------------------------------
-    // Clear history
+    // Clear
     // ------------------------------------------------------------------------
 
     fn clear() -> Bool {
@@ -283,6 +288,7 @@ module shell_history {
         }
 
         let now: UInt64 = timestamp()
+        var changed: Bool = false
 
         for i in 0..entries.length() {
 
@@ -290,10 +296,14 @@ module shell_history {
 
                 entries[i].active = false
                 entries[i].updated_at = now
+
+                changed = true
             }
         }
 
-        dirty = true
+        if changed == true {
+            dirty = true
+        }
 
         return true
     }
@@ -334,7 +344,7 @@ module shell_history {
     }
 
     // ------------------------------------------------------------------------
-    // First active command
+    // First
     // ------------------------------------------------------------------------
 
     fn first() -> String {
@@ -354,7 +364,7 @@ module shell_history {
     }
 
     // ------------------------------------------------------------------------
-    // Last active command
+    // Last
     // ------------------------------------------------------------------------
 
     fn last() -> String {
@@ -378,7 +388,7 @@ module shell_history {
     }
 
     // ------------------------------------------------------------------------
-    // List active history
+    // List
     // ------------------------------------------------------------------------
 
     fn list() -> String {
@@ -391,52 +401,14 @@ module shell_history {
 
         for entry in entries {
 
-            if entry.active == true {
-
-                result = result
-                    + entry.id.to_string()
-                    + ": "
-                    + entry.command
-                    + "\n"
+            if entry.active == false {
+                continue
             }
-        }
-
-        return result
-    }
-
-    // ------------------------------------------------------------------------
-    // Export history
-    // ------------------------------------------------------------------------
-
-    fn export() -> String {
-
-        if initialized == false {
-            return ""
-        }
-
-        var result: String = ""
-
-        result = result
-            + "ATC-24-HISTORY\n"
-            + "VERSION="
-            + HISTORY_VERSION.to_string()
-            + "\n"
-            + "NEXT_ID="
-            + next_id.to_string()
-            + "\n"
-
-        for entry in entries {
 
             result = result
                 + entry.id.to_string()
-                + "|"
+                + ": "
                 + entry.command
-                + "|"
-                + entry.active.to_string()
-                + "|"
-                + entry.created_at.to_string()
-                + "|"
-                + entry.updated_at.to_string()
                 + "\n"
         }
 
@@ -444,7 +416,20 @@ module shell_history {
     }
 
     // ------------------------------------------------------------------------
-    // Save history
+    // Create persistence object
+    // ------------------------------------------------------------------------
+
+    fn create_store() -> HistoryStore {
+
+        return HistoryStore {
+            version: HISTORY_VERSION,
+            next_id: next_id,
+            entries: entries,
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Save
     // ------------------------------------------------------------------------
 
     fn save() -> Bool {
@@ -453,10 +438,16 @@ module shell_history {
             return false
         }
 
-        let data: String = export()
+        let store: HistoryStore = create_store()
+
+        let data: String = system.codec.serialize(store)
+
+        if data == "" {
+            return false
+        }
 
         let result = system.storage.write(
-            "atc/shell/history",
+            STORAGE_KEY,
             data
         )
 
@@ -470,7 +461,7 @@ module shell_history {
     }
 
     // ------------------------------------------------------------------------
-    // Load history
+    // Load
     // ------------------------------------------------------------------------
 
     fn load() -> Bool {
@@ -480,56 +471,38 @@ module shell_history {
         }
 
         let data: String = system.storage.read(
-            "atc/shell/history"
+            STORAGE_KEY
         )
 
         if data == "" {
             return true
         }
 
-        let lines: Array<String> = data.split("\n")
+        let store: HistoryStore = system.codec.deserialize<HistoryStore>(
+            data
+        )
 
-        for line in lines {
-
-            if line == "" {
-                continue
-            }
-
-            if line == "ATC-24-HISTORY" {
-                continue
-            }
-
-            if line.starts_with("VERSION=") {
-                continue
-            }
-
-            if line.starts_with("NEXT_ID=") {
-
-                next_id = line
-                    .replace("NEXT_ID=", "")
-                    .to_uint64()
-
-                continue
-            }
-
-            let parts: Array<String> = line.split("|")
-
-            if parts.length() < 5 {
-                continue
-            }
-
-            let entry = History {
-                id: parts[0].to_uint64(),
-                command: parts[1],
-                active: parts[2].to_bool(),
-                created_at: parts[3].to_uint64(),
-                updated_at: parts[4].to_uint64(),
-            }
-
-            entries.push(entry)
+        if store.version != HISTORY_VERSION {
+            return false
         }
 
+        entries = store.entries
+        next_id = store.next_id
+
         trim()
+
+        if next_id == 0 {
+            next_id = 1
+        }
+
+        // Guarantee that the next ID is greater than every
+        // existing immutable history ID.
+        for entry in entries {
+
+            if entry.id >= next_id {
+                next_id = entry.id + 1
+            }
+        }
 
         dirty = false
 
@@ -537,7 +510,22 @@ module shell_history {
     }
 
     // ------------------------------------------------------------------------
-    // Import history
+    // Export
+    // ------------------------------------------------------------------------
+
+    fn export() -> String {
+
+        if initialized == false {
+            return ""
+        }
+
+        let store: HistoryStore = create_store()
+
+        return system.codec.serialize(store)
+    }
+
+    // ------------------------------------------------------------------------
+    // Import
     // ------------------------------------------------------------------------
 
     fn import(data: String) -> Bool {
@@ -550,56 +538,50 @@ module shell_history {
             return false
         }
 
-        let lines: Array<String> = data.split("\n")
+        let store: HistoryStore = system.codec.deserialize<HistoryStore>(
+            data
+        )
 
-        entries = []
-        next_id = 1
-
-        for line in lines {
-
-            if line == "" {
-                continue
-            }
-
-            if line == "ATC-24-HISTORY" {
-                continue
-            }
-
-            if line.starts_with("VERSION=") {
-                continue
-            }
-
-            if line.starts_with("NEXT_ID=") {
-
-                next_id = line
-                    .replace("NEXT_ID=", "")
-                    .to_uint64()
-
-                continue
-            }
-
-            let parts: Array<String> = line.split("|")
-
-            if parts.length() < 5 {
-                continue
-            }
-
-            let entry = History {
-                id: parts[0].to_uint64(),
-                command: parts[1],
-                active: parts[2].to_bool(),
-                created_at: parts[3].to_uint64(),
-                updated_at: parts[4].to_uint64(),
-            }
-
-            entries.push(entry)
+        if store.version != HISTORY_VERSION {
+            return false
         }
 
+        entries = store.entries
+        next_id = store.next_id
+
         trim()
+
+        if next_id == 0 {
+            next_id = 1
+        }
+
+        for entry in entries {
+
+            if entry.id >= next_id {
+                next_id = entry.id + 1
+            }
+        }
 
         dirty = true
 
         return true
+    }
+
+    // ------------------------------------------------------------------------
+    // Persist
+    // ------------------------------------------------------------------------
+
+    fn persist() -> Bool {
+
+        if initialized == false {
+            return false
+        }
+
+        if dirty == false {
+            return true
+        }
+
+        return save()
     }
 
     // ------------------------------------------------------------------------
@@ -612,11 +594,8 @@ module shell_history {
             return false
         }
 
-        if dirty == true {
-
-            if save() == false {
-                return false
-            }
+        if persist() == false {
+            return false
         }
 
         initialized = false
