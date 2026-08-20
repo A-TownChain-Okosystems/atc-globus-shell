@@ -2,7 +2,7 @@
 // Module: shell_history
 // Description: Persistent command history
 // ATC-Standard: ATC-24
-// Sprint: 3.2
+// Sprint: 3.3
 // Language: ATCLang v0.3
 // Created: 2026-08-20
 // Agent: Aurora (MasterBrain · Base44)
@@ -17,6 +17,7 @@ module shell_history {
     const MAX_ENTRIES: UInt64 = 1000
     const HISTORY_VERSION: UInt64 = 1
     const STORAGE_KEY: String = "atc/shell/history"
+    const MAX_COMMAND_LENGTH: UInt64 = 4096
 
     // ------------------------------------------------------------------------
     // Primary struct
@@ -65,7 +66,11 @@ module shell_history {
         initialized = true
 
         if load() == false {
+            entries = []
+            next_id = 1
+            dirty = false
             initialized = false
+
             return false
         }
 
@@ -107,7 +112,48 @@ module shell_history {
             return false
         }
 
+        if command.length() > MAX_COMMAND_LENGTH {
+            return false
+        }
+
         return true
+    }
+
+    // ------------------------------------------------------------------------
+    // Check ID existence
+    // ------------------------------------------------------------------------
+
+    fn id_exists(id: UInt64) -> Bool {
+
+        if id == 0 {
+            return false
+        }
+
+        for entry in entries {
+
+            if entry.id == id {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    // ------------------------------------------------------------------------
+    // Generate next immutable ID
+    // ------------------------------------------------------------------------
+
+    fn allocate_id() -> UInt64 {
+
+        let id: UInt64 = next_id
+
+        if next_id == UInt64:MAX {
+            return 0
+        }
+
+        next_id = next_id + 1
+
+        return id
     }
 
     // ------------------------------------------------------------------------
@@ -124,10 +170,20 @@ module shell_history {
             return false
         }
 
+        let id: UInt64 = allocate_id()
+
+        if id == 0 {
+            return false
+        }
+
+        if id_exists(id) == true {
+            return false
+        }
+
         let now: UInt64 = timestamp()
 
         let entry = History {
-            id: next_id,
+            id: id,
             command: command,
             active: true,
             created_at: now,
@@ -136,7 +192,6 @@ module shell_history {
 
         entries.push(entry)
 
-        next_id = next_id + 1
         dirty = true
 
         trim()
@@ -202,6 +257,10 @@ module shell_history {
             return ""
         }
 
+        if id == 0 {
+            return ""
+        }
+
         for entry in entries {
 
             if entry.id == id {
@@ -227,19 +286,15 @@ module shell_history {
             return ""
         }
 
+        if id == 0 {
+            return ""
+        }
+
         for entry in entries {
 
             if entry.id == id {
 
-                return entry.id.to_string()
-                    + "|"
-                    + entry.command
-                    + "|"
-                    + entry.active.to_string()
-                    + "|"
-                    + entry.created_at.to_string()
-                    + "|"
-                    + entry.updated_at.to_string()
+                return system.codec.serialize(entry)
             }
         }
 
@@ -253,6 +308,10 @@ module shell_history {
     fn remove(id: UInt64) -> Bool {
 
         if initialized == false {
+            return false
+        }
+
+        if id == 0 {
             return false
         }
 
@@ -429,6 +488,79 @@ module shell_history {
     }
 
     // ------------------------------------------------------------------------
+    // Validate persistence store
+    // ------------------------------------------------------------------------
+
+    fn validate_store(store: HistoryStore) -> Bool {
+
+        if store.version != HISTORY_VERSION {
+            return false
+        }
+
+        if store.next_id == 0 {
+            return false
+        }
+
+        if store.entries.length() > MAX_ENTRIES {
+            return false
+        }
+
+        var highest_id: UInt64 = 0
+
+        for entry in store.entries {
+
+            if entry.id == 0 {
+                return false
+            }
+
+            if entry.command == "" {
+                return false
+            }
+
+            if entry.command.length() > MAX_COMMAND_LENGTH {
+                return false
+            }
+
+            if entry.created_at == 0 {
+                return false
+            }
+
+            if entry.updated_at == 0 {
+                return false
+            }
+
+            if entry.updated_at < entry.created_at {
+                return false
+            }
+
+            if entry.id > highest_id {
+                highest_id = entry.id
+            }
+
+            // No duplicate IDs.
+            for other in store.entries {
+
+                if other.id == entry.id {
+
+                    if other.command != entry.command
+                        || other.created_at != entry.created_at
+                        || other.updated_at != entry.updated_at
+                        || other.active != entry.active {
+
+                        return false
+                    }
+                }
+            }
+        }
+
+        if highest_id >= store.next_id {
+            return false
+        }
+
+        return true
+    }
+
+    // ------------------------------------------------------------------------
     // Save
     // ------------------------------------------------------------------------
 
@@ -439,6 +571,10 @@ module shell_history {
         }
 
         let store: HistoryStore = create_store()
+
+        if validate_store(store) == false {
+            return false
+        }
 
         let data: String = system.codec.serialize(store)
 
@@ -478,11 +614,10 @@ module shell_history {
             return true
         }
 
-        let store: HistoryStore = system.codec.deserialize<HistoryStore>(
-            data
-        )
+        let store: HistoryStore =
+            system.codec.deserialize<HistoryStore>(data)
 
-        if store.version != HISTORY_VERSION {
+        if validate_store(store) == false {
             return false
         }
 
@@ -491,15 +626,15 @@ module shell_history {
 
         trim()
 
-        if next_id == 0 {
-            next_id = 1
-        }
-
-        // Guarantee that the next ID is greater than every
-        // existing immutable history ID.
+        // Defensive next-ID recovery.
         for entry in entries {
 
             if entry.id >= next_id {
+
+                if entry.id == UInt64:MAX {
+                    return false
+                }
+
                 next_id = entry.id + 1
             }
         }
@@ -521,6 +656,10 @@ module shell_history {
 
         let store: HistoryStore = create_store()
 
+        if validate_store(store) == false {
+            return ""
+        }
+
         return system.codec.serialize(store)
     }
 
@@ -538,26 +677,28 @@ module shell_history {
             return false
         }
 
-        let store: HistoryStore = system.codec.deserialize<HistoryStore>(
-            data
-        )
+        let store: HistoryStore =
+            system.codec.deserialize<HistoryStore>(data)
 
-        if store.version != HISTORY_VERSION {
+        if validate_store(store) == false {
             return false
         }
 
+        // Transactional import:
+        // Existing runtime state is not modified until validation succeeds.
         entries = store.entries
         next_id = store.next_id
 
         trim()
 
-        if next_id == 0 {
-            next_id = 1
-        }
-
         for entry in entries {
 
             if entry.id >= next_id {
+
+                if entry.id == UInt64:MAX {
+                    return false
+                }
+
                 next_id = entry.id + 1
             }
         }
@@ -598,6 +739,9 @@ module shell_history {
             return false
         }
 
+        entries = []
+        next_id = 1
+        dirty = false
         initialized = false
 
         return true
