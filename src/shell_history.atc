@@ -10,39 +10,223 @@
 
 module shell_history {
 
-// Primary struct
-struct History {
-    id: UInt64,
-    name: String,
-    active: Bool,
-    created_at: UInt64,
-    updated_at: UInt64,
-}
+    // ------------------------------------------------------------------------
+    // Configuration
+    // ------------------------------------------------------------------------
 
-// Initialize module
-fn init() -> Bool {
-    return true
-}
+    const MAX_ENTRIES: UInt64 = 1000
 
-// Get status
-fn status() -> String {
-    return "shell_history ready"
-}
+    // ------------------------------------------------------------------------
+    // Primary struct
+    // ------------------------------------------------------------------------
 
-// Add entry
-fn add(cmd: String) -> Bool {
-    // TODO: Implement
-    return Bool:default()
-}
-// Search history
-fn search(query: String) -> String {
-    // TODO: Implement
-    return String:default()
-}
-// Recall entry
-fn recall(index: UInt64) -> String {
-    // TODO: Implement
-    return String:default()
-}
+    struct History {
+        id: UInt64,
+        name: String,
+        active: Bool,
+        created_at: UInt64,
+        updated_at: UInt64,
+    }
+
+    // ------------------------------------------------------------------------
+    // Internal state
+    // ------------------------------------------------------------------------
+
+    var entries: Array<History> = []
+    var next_id: UInt64 = 1
+    var initialized: Bool = false
+
+    // ------------------------------------------------------------------------
+    // Initialize module
+    // ------------------------------------------------------------------------
+
+    fn init() -> Bool {
+
+        if initialized == true {
+            return true
+        }
+
+        entries = []
+        next_id = 1
+        initialized = true
+
+        return true
+    }
+
+    // ------------------------------------------------------------------------
+    // Get status
+    // ------------------------------------------------------------------------
+
+    fn status() -> String {
+
+        if initialized == false {
+            return "shell_history offline"
+        }
+
+        return "shell_history ready"
+    }
+
+    // ------------------------------------------------------------------------
+    // Current timestamp
+    // ------------------------------------------------------------------------
+
+    fn timestamp() -> UInt64 {
+        return system.time.unix()
+    }
+
+    // ------------------------------------------------------------------------
+    // Add command
+    // ------------------------------------------------------------------------
+
+    fn add(cmd: String) -> Bool {
+
+        if initialized == false {
+            return false
+        }
+
+        if cmd == "" {
+            return false
+        }
+
+        let now: UInt64 = timestamp()
+
+        let entry = History {
+            id: next_id,
+            name: cmd,
+            active: true,
+            created_at: now,
+            updated_at: now,
+        }
+
+        entries.push(entry)
+
+        next_id = next_id + 1
+
+        // Keep history within configured limit.
+        if entries.length() > MAX_ENTRIES {
+            entries.remove_first()
+        }
+
+        return true
+    }
+
+    // ------------------------------------------------------------------------
+    // Search history
+    // ------------------------------------------------------------------------
+
+    fn search(query: String) -> String {
+
+        if initialized == false {
+            return ""
+        }
+
+        if query == "" {
+            return ""
+        }
+
+        var result: String = ""
+
+        for entry in entries {
+
+            if entry.active == false {
+                continue
+            }
+
+            if entry.name.contains(query) {
+
+                result = result
+                    + entry.id.to_string()
+                    + ": "
+                    + entry.name
+                    + "\n"
+            }
+        }
+
+        return result
+    }
+
+    // ------------------------------------------------------------------------
+    // Recall entry
+    // ------------------------------------------------------------------------
+
+    fn recall(index: UInt64) -> String {
+
+        if initialized == false {
+            return ""
+        }
+
+        for entry in entries {
+
+            if entry.id == index && entry.active == true {
+                return entry.name
+            }
+        }
+
+        return ""
+    }
+
+    // ------------------------------------------------------------------------
+    // Remove entry
+    // ------------------------------------------------------------------------
+
+    fn remove(index: UInt64) -> Bool {
+
+        if initialized == false {
+            return false
+        }
+
+        for i in 0..entries.length() {
+
+            if entries[i].id == index {
+
+                entries[i].active = false
+                entries[i].updated_at = timestamp()
+
+                return true
+            }
+        }
+
+        return false
+    }
+
+    // ------------------------------------------------------------------------
+    // Clear history
+    // ------------------------------------------------------------------------
+
+    fn clear() -> Bool {
+
+        if initialized == false {
+            return false
+        }
+
+        for i in 0..entries.length() {
+            entries[i].active = false
+            entries[i].updated_at = timestamp()
+        }
+
+        return true
+    }
+
+    // ------------------------------------------------------------------------
+    // Count active entries
+    // ------------------------------------------------------------------------
+
+    fn count() -> UInt64 {
+
+        if initialized == false {
+            return 0
+        }
+
+        var total: UInt64 = 0
+
+        for entry in entries {
+
+            if entry.active == true {
+                total = total + 1
+            }
+        }
+
+        return total
+    }
 
 } // module shell_history
